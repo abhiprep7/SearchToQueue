@@ -435,8 +435,8 @@ var MyWidget = function() {
     this.renderDebugUI = function(params, searchValue) {
         var content = document.querySelector("div#content");
         content.innerHTML = `
-            <div class="card">
-                <h1>Search bridge (URL &rarr; PlatformAPI publish)</h1>
+            <details class="card" open>
+                <summary><h1>Search bridge (URL &rarr; PlatformAPI publish)</h1></summary>
                 <div id="auto-status" class="status"></div>
 
                 <h2>Manual publish (test different topics)</h2>
@@ -448,10 +448,10 @@ var MyWidget = function() {
 
                 <button id="publish-btn" type="button">Publish</button>
                 <div id="manual-status" class="status"></div>
-            </div>
+            </details>
 
-            <div class="card">
-                <h2>Redirect test</h2>
+            <details class="card" open>
+                <summary><h2>Redirect test</h2></summary>
                 <p class="hint">
                     Tests whether this widget's iframe can navigate the whole browser tab at all
                     (some platforms sandbox widget iframes without top-level navigation
@@ -462,16 +462,16 @@ var MyWidget = function() {
 
                 <button id="redirect-btn" type="button">Redirect</button>
                 <div id="redirect-status" class="status"></div>
-            </div>
+            </details>
 
-            <div class="card">
-                <h2>Live message log (subscribed to "*")</h2>
+            <details class="card" open>
+                <summary><h2>Live message log (subscribed to "*")</h2></summary>
                 <p class="hint">Drag-and-drop pushes land here too, on the "${DEFAULT_DND_TOPIC}" topic (or your configured dndTopic preference).</p>
                 <button id="clear-log-btn" type="button" class="secondary">Clear log</button>
                 <div class="log" id="log">
                     <div class="log-empty">No messages yet.</div>
                 </div>
-            </div>`;
+            </details>`;
 
         var topicInput = document.getElementById("topic");
         var valueInput = document.getElementById("value");

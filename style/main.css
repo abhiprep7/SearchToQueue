@@ -32,6 +32,35 @@
     color: #616161;
 }
 
+/* Collapsible cards (<details class="card">): the h1/h2 lives inside <summary>, so it needs
+   its own margin reset there instead of the standalone-heading margin above. */
+details.card > summary {
+    cursor: pointer;
+    list-style: none;
+}
+
+details.card > summary::-webkit-details-marker {
+    display: none;
+}
+
+details.card > summary h1,
+details.card > summary h2 {
+    display: inline-block;
+    margin: 0;
+}
+
+details.card > summary::before {
+    content: "\25b8";
+    display: inline-block;
+    width: 1em;
+    color: #757575;
+    transition: transform 0.15s ease;
+}
+
+details.card[open] > summary::before {
+    transform: rotate(90deg);
+}
+
 .card p.hint {
     margin: 0 0 8px;
     color: #757575;
