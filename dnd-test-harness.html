@@ -103,11 +103,24 @@
       platformAPISubscribers.push({ topic: topic, callback: callback });
     }
   };
+  // The real DS/DataDragAndDrop/DataDragAndDrop module isn't under test here - this harness
+  // simulates drops via native browser drag events / a synthetic dispatch instead (see the
+  // drag-source and simulate-btn handlers below), so this just needs to not throw when
+  // start() calls DataDragAndDrop.droppable(...).
+  var dataDragAndDropStub = {
+    droppable: function() {}
+  };
   window.require = function(deps, callback) {
-    if (callback) { callback(platformAPIStub); }
+    if (!callback) { return; }
+    var moduleId = deps && deps[0];
+    if (moduleId === "DS/DataDragAndDrop/DataDragAndDrop") {
+      callback(dataDragAndDropStub);
+    } else {
+      callback(platformAPIStub);
+    }
   };
 </script>
-<script src="script/main.js?v=15"></script>
+<script src="script/main.js?v=16"></script>
 <script>
   var samplePayload = {
     protocol: "3DXContent",

@@ -42,10 +42,19 @@ var MyWidget = function() {
         widget.addEvent("onLoad", me.onLoad);
         widget.addEvent("onRefresh", me.onRefresh);
 
-        // DnD works on the widget's own document regardless of debug UI, so wire it here
-        // rather than inside renderDebugUI.
+        // Native browser DnD - covers dragging an actual .json file in from the OS file
+        // system (that's a real browser-level drag, independent of the platform). Works
+        // regardless of debug UI, so wire it here rather than inside renderDebugUI.
         document.addEventListener("dragover", me.onDragOver);
         document.addEventListener("drop", me.onDrop);
+
+        // The 3DX platform's own drag-and-drop (e.g. dragging an object in from a search
+        // results panel elsewhere on the dashboard) does NOT dispatch native browser drag
+        // events into this iframe - it requires registering a drop target through the
+        // platform's own module instead.
+        require(["DS/DataDragAndDrop/DataDragAndDrop"], function(DataDragAndDrop) {
+            DataDragAndDrop.droppable(document.body, { drop: me.onPlatformDrop });
+        });
     };
 
     this.getParams = function() {
@@ -193,12 +202,28 @@ var MyWidget = function() {
         }
     };
 
+    // Handles a drop delivered through the 3DX platform's own DS/DataDragAndDrop module (see
+    // start()) - this is how dragging an object in from elsewhere on the platform (e.g. a
+    // search results panel) actually arrives; it does not fire a native browser drop event.
+    // strData is already the raw string payload, handed to us directly by the platform.
+    this.onPlatformDrop = function(strData, element, event) {
+        me.debugLog("Search Bridge: platform drop payload raw", strData);
+
+        var items = me.extractDroppedItems(strData);
+        if (!items.length) {
+            return;
+        }
+
+        me.debugLog("Search Bridge: extracted dropped items (platform DnD)", items);
+        me.dispatchDroppedItems(items);
+    };
+
+    // Handles a native browser drop - covers dragging an actual .json file in from the OS
+    // file system (dataTransfer.files), which is a real browser-level drag independent of
+    // the platform's own DnD module above.
     this.onDrop = function(e) {
         e.preventDefault();
 
-        // A real 3DX drag source carries the payload as text data (no File involved), but
-        // dragging an actual .json file in from the OS file system arrives as dataTransfer.files
-        // instead - handle both.
         if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
             me.handleDroppedFiles(e.dataTransfer.files);
             return;
