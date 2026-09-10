@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>SearchBridge DnD/AMQ test harness</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; padding: 20px; max-width: 720px; }
+  h1 { font-size: 18px; }
+  p.hint { color: #555; }
+  #drag-source {
+    display: inline-block; padding: 14px 22px; background: #2b6cb0; color: #fff;
+    border-radius: 6px; cursor: grab; font-weight: 600; user-select: none;
+  }
+  #drag-source:active { cursor: grabbing; }
+  #simulate-btn { margin-left: 12px; padding: 14px 18px; font-size: 14px; cursor: pointer; }
+  #drop-zone-hint {
+    margin-top: 16px; padding: 40px; border: 2px dashed #999; border-radius: 8px;
+    text-align: center; color: #666;
+  }
+  #harness-log {
+    margin-top: 20px; max-height: 320px; overflow-y: auto; background: #111;
+    color: #ddd; font-family: monospace; font-size: 12px; padding: 10px; border-radius: 6px;
+  }
+  .harness-log-line { padding: 2px 0; border-bottom: 1px solid #333; white-space: pre-wrap; word-break: break-all; }
+  .harness-log-line.warn { color: #f6ad55; }
+</style>
+</head>
+<body>
+  <h1>SearchBridge drag-and-drop &rarr; AMQ test harness</h1>
+  <p class="hint">
+    This is a local-only dev page. It stubs the 3DX <code>widget</code> platform global
+    (getUrl/addEvent/addPreference/getValue/setIcon/setTitle) so the real
+    <code>script/main.js</code> can run and be dropped on outside of an actual 3DX dashboard.
+    The AMQ preferences below are pre-filled to point at the local broker started via
+    <code>start-amq.bat</code>. Open this page with <code>?debug=1</code> so drop/push
+    results are logged (both to devtools console and the on-page log below).
+  </p>
+
+  <div id="drag-source" draggable="true">&#128230; Drag me onto the page (2 VPMReference objects)</div>
+  <button id="simulate-btn" type="button">Or click to simulate a drop</button>
+
+  <div id="drop-zone-hint">
+    Drop anywhere on this page &mdash; main.js listens for drop on <code>document</code>,
+    not a specific element.
+  </div>
+
+  <div id="content"></div>
+
+  <div id="harness-log"></div>
+
+<script>
+  // --- mirror console.log/warn onto the page, so results are visible without devtools ---
+  (function() {
+    var logEl = document.getElementById("harness-log");
+    var origLog = console.log, origWarn = console.warn;
+    function append(kind, args) {
+      var line = document.createElement("div");
+      line.className = "harness-log-line " + kind;
+      line.textContent = "[" + kind + "] " + Array.prototype.map.call(args, function(a) {
+        try { return typeof a === "string" ? a : JSON.stringify(a); } catch (e) { return String(a); }
+      }).join(" ");
+      logEl.insertBefore(line, logEl.firstChild);
+    }
+    console.log = function() { append("log", arguments); origLog.apply(console, arguments); };
+    console.warn = function() { append("warn", arguments); origWarn.apply(console, arguments); };
+  })();
+
+  // --- minimal 3DX platform stub: just enough surface area for main.js to run standalone ---
+  window.widget = {
+    _prefs: {
+      amqRestUrl: "http://localhost:8161/api/message",
+      amqDestination: "SEARCHBRIDGE.DND",
+      amqDestinationType: "queue",
+      amqUsername: "admin",
+      amqPassword: "admin"
+    },
+    getUrl: function() { return window.location.href; },
+    addEvent: function(name, fn) {
+      // Real platform calls onLoad once the widget iframe is ready; simulate that here.
+      if (name === "onLoad") { setTimeout(fn, 0); }
+    },
+    addPreference: function(pref) {
+      if (!(pref.name in this._prefs)) { this._prefs[pref.name] = pref.defaultValue; }
+    },
+    getValue: function(name) { return this._prefs[name]; },
+    setIcon: function() {},
+    setTitle: function(t) { document.title = t; }
+  };
+
+  // main.js's publish path uses require(["DS/PlatformAPI/PlatformAPI"]) which only exists on
+  // the real 3DX platform. Not under test here (we're testing the AMQ push path) - stub it so
+  // it doesn't throw when the debug UI tries to subscribe to messages.
+  window.require = function(deps) {
+    console.warn("harness: require() stub - PlatformAPI not available here, ignoring", deps);
+  };
+</script>
+<script src="script/main.js?v=12"></script>
+<script>
+  var samplePayload = {
+    protocol: "3DXContent",
+    version: "2.0",
+    source: "EXA_AEP_AP",
+    widgetId: "AQ6lY1WA09y2RZBqR06m",
+    data: {
+      items: [
+        {
+          envId: "OI000562550",
+          objectType: "VPMReference",
+          objectId: "FFFFE288D3EC49A4AFFCA0311A03A6FD",
+          serviceId: "3DSpace"
+        },
+        {
+          envId: "OI000562551",
+          objectType: "VPMReference",
+          objectId: "AAAA1111222233334444555566667777",
+          serviceId: "3DSpace"
+        }
+      ]
+    }
+  };
+
+  document.getElementById("drag-source").addEventListener("dragstart", function(e) {
+    e.dataTransfer.setData("text/plain", JSON.stringify(samplePayload));
+    e.dataTransfer.effectAllowed = "copy";
+  });
+
+  document.getElementById("simulate-btn").addEventListener("click", function() {
+    var dt = new DataTransfer();
+    dt.setData("text/plain", JSON.stringify(samplePayload));
+    document.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+  });
+
+  console.log("Harness ready. debug=" + (window.location.search.indexOf("debug=1") !== -1) + " - append ?debug=1 to the URL if that's false.");
+</script>
+</body>
+</html>

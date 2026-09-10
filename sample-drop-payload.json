@@ -1,0 +1,22 @@
+{
+  "protocol": "3DXContent",
+  "version": "2.0",
+  "source": "EXA_AEP_AP",
+  "widgetId": "AQ6lY1WA09y2RZBqR06m",
+  "data": {
+    "items": [
+      {
+        "envId": "OI000562550",
+        "objectType": "VPMReference",
+        "objectId": "FFFFE288D3EC49A4AFFCA0311A03A6FD",
+        "serviceId": "3DSpace"
+      },
+      {
+        "envId": "OI000562551",
+        "objectType": "VPMReference",
+        "objectId": "AAAA1111222233334444555566667777",
+        "serviceId": "3DSpace"
+      }
+    ]
+  }
+}

@@ -22,6 +22,11 @@ var AMQ_DESTINATION_PREF = "amqDestination";
 var AMQ_DESTINATION_TYPE_PREF = "amqDestinationType";
 var AMQ_USERNAME_PREF = "amqUsername";
 var AMQ_PASSWORD_PREF = "amqPassword";
+// Broker name from ActiveMQ's own config (<broker brokerName="..."> in activemq.xml,
+// "localhost" unless changed) - needed to address the queue's JMX MBean for browsing.
+var AMQ_BROKER_NAME_PREF = "amqBrokerName";
+
+var QUEUE_VIEW_REFRESH_MS = 5000;
 
 var MyWidget = function() {
     var me = this;
@@ -187,6 +192,14 @@ var MyWidget = function() {
     this.onDrop = function(e) {
         e.preventDefault();
 
+        // A real 3DX drag source carries the payload as text data (no File involved), but
+        // dragging an actual .json file in from the OS file system arrives as dataTransfer.files
+        // instead - handle both.
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+            me.handleDroppedFiles(e.dataTransfer.files);
+            return;
+        }
+
         var raw = "";
         if (e.dataTransfer) {
             raw = e.dataTransfer.getData("text/plain") ||
@@ -204,6 +217,36 @@ var MyWidget = function() {
 
         me.debugLog("Search Bridge: extracted dropped items", items);
         me.pushToAmq(items);
+    };
+
+    // Reads one or more dropped .json files (each expected to contain a single 3DXContent
+    // payload) and merges the extracted items from all of them into a single AMQ push.
+    this.handleDroppedFiles = function(fileList) {
+        var files = Array.prototype.slice.call(fileList);
+        var pending = files.length;
+        var allItems = [];
+
+        files.forEach(function(file) {
+            var reader = new FileReader();
+            reader.onload = function() {
+                var items = me.extractDroppedItems(String(reader.result));
+                if (items.length) {
+                    me.debugLog("Search Bridge: extracted items from file", file.name, items);
+                    allItems = allItems.concat(items);
+                } else {
+                    me.debugWarn("Search Bridge: file did not contain a recognizable 3DXContent payload", file.name);
+                }
+                pending--;
+                if (pending === 0 && allItems.length) {
+                    me.pushToAmq(allItems);
+                }
+            };
+            reader.onerror = function() {
+                me.debugWarn("Search Bridge: failed to read dropped file", file.name, reader.error);
+                pending--;
+            };
+            reader.readAsText(file);
+        });
     };
 
     this.getAmqAuthHeader = function() {
@@ -253,6 +296,68 @@ var MyWidget = function() {
                     me.debugWarn("Search Bridge: AMQ push failed", { destination: destination, item: item, err: err });
                 });
         });
+    };
+
+    // Jolokia (ActiveMQ's JMX-over-HTTP API) lives alongside the REST Message API on the
+    // same webapp, at .../api/jolokia instead of .../api/message.
+    this.getAmqJolokiaUrl = function() {
+        var restUrl = widget.getValue(AMQ_REST_URL_PREF);
+        if (!restUrl) {
+            return "";
+        }
+        return restUrl.replace(/\/+$/, "").replace(/\/message$/, "") + "/jolokia/";
+    };
+
+    this.getAmqQueueMBean = function() {
+        var destination = widget.getValue(AMQ_DESTINATION_PREF);
+        if (!destination) {
+            return "";
+        }
+        var brokerName = widget.getValue(AMQ_BROKER_NAME_PREF) || "localhost";
+        var destinationType = widget.getValue(AMQ_DESTINATION_TYPE_PREF) === "topic" ? "Topic" : "Queue";
+        return "org.apache.activemq:type=Broker,brokerName=" + brokerName +
+            ",destinationType=" + destinationType + ",destinationName=" + destination;
+    };
+
+    // Non-destructive read of what's currently sitting on the destination, via the queue/topic
+    // MBean's browse() operation - unlike the REST Message API's GET, this does NOT consume
+    // the messages. onDone(messages) on success, onDone(null, err) on failure.
+    this.browseAmqQueue = function(onDone) {
+        var jolokiaUrl = me.getAmqJolokiaUrl();
+        var mbean = me.getAmqQueueMBean();
+        if (!jolokiaUrl || !mbean) {
+            onDone([]);
+            return;
+        }
+
+        var headers = { "Content-Type": "application/json" };
+        var authHeader = me.getAmqAuthHeader();
+        if (authHeader) {
+            headers.Authorization = authHeader;
+        }
+
+        fetch(jolokiaUrl, {
+            method: "POST",
+            headers: headers,
+            body: JSON.stringify({ type: "exec", mbean: mbean, operation: "browse()" })
+        })
+            .then(function(res) {
+                if (!res.ok) {
+                    throw new Error("HTTP " + res.status);
+                }
+                return res.json();
+            })
+            .then(function(json) {
+                if (json.status !== 200) {
+                    throw new Error(json.error || ("Jolokia error status " + json.status));
+                }
+                me.debugLog("Search Bridge: browsed AMQ destination", json.value);
+                onDone(json.value || []);
+            })
+            .catch(function(err) {
+                me.debugWarn("Search Bridge: AMQ browse failed", err);
+                onDone(null, err);
+            });
     };
 
     this.debugLog = function() {
@@ -334,6 +439,13 @@ var MyWidget = function() {
             defaultValue: ""
         });
 
+        widget.addPreference({
+            name: AMQ_BROKER_NAME_PREF,
+            type: "text",
+            label: 'ActiveMQ broker name (from activemq.xml, default "localhost") - needed to browse the queue',
+            defaultValue: "localhost"
+        });
+
         var params = me.getParams();
         me.debug = params.debug === "1";
 
@@ -400,6 +512,16 @@ var MyWidget = function() {
                 <div class="log" id="log">
                     <div class="log-empty">No messages yet.</div>
                 </div>
+            </div>
+
+            <div class="card">
+                <h2>AMQ queue content</h2>
+                <p class="hint">Non-destructive browse (messages stay on the queue). Auto-refreshes every 5s.</p>
+                <button id="queue-refresh-btn" type="button" class="secondary">Refresh now</button>
+                <div id="queue-status" class="status"></div>
+                <div class="log" id="queue-list">
+                    <div class="log-empty">Not loaded yet.</div>
+                </div>
             </div>`;
 
         var topicInput = document.getElementById("topic");
@@ -412,6 +534,9 @@ var MyWidget = function() {
         var redirectTargetInput = document.getElementById("redirect-target");
         var redirectBtn = document.getElementById("redirect-btn");
         var redirectStatus = document.getElementById("redirect-status");
+        var queueRefreshBtn = document.getElementById("queue-refresh-btn");
+        var queueStatus = document.getElementById("queue-status");
+        var queueList = document.getElementById("queue-list");
 
         var topic = params.topic || DEFAULT_TOPIC;
 
@@ -439,6 +564,50 @@ var MyWidget = function() {
         me.listenMessage("*", function(messageBody, fullMessage) {
             me.appendLog(log, fullMessage.topic, messageBody);
         });
+
+        var renderQueueMessages = function(messages, err) {
+            if (err) {
+                me.setStatus(queueStatus, "failure", "Failed to load queue: " + err.message);
+                return;
+            }
+
+            queueList.innerHTML = "";
+            if (!messages.length) {
+                var emptyEl = document.createElement("div");
+                emptyEl.className = "log-empty";
+                emptyEl.textContent = "Queue is empty.";
+                queueList.appendChild(emptyEl);
+            } else {
+                messages.forEach(function(msg) {
+                    var entry = document.createElement("div");
+                    entry.className = "log-entry";
+                    var bodyText;
+                    try {
+                        bodyText = JSON.stringify(JSON.parse(msg.Text));
+                    } catch (parseErr) {
+                        bodyText = msg.Text;
+                    }
+                    entry.textContent = "[" + msg.JMSTimestamp + "] " + bodyText;
+                    queueList.appendChild(entry);
+                });
+            }
+            me.setStatus(queueStatus, "success", messages.length + " message(s) on queue.");
+        };
+
+        queueRefreshBtn.addEventListener("click", function() {
+            me.browseAmqQueue(renderQueueMessages);
+        });
+
+        me.browseAmqQueue(renderQueueMessages);
+
+        // Debug UI gets rebuilt (fresh interval + stale closures) each time renderDebugUI runs,
+        // so clear any previous timer first to avoid stacking multiple auto-refreshes.
+        if (me.queueViewTimer) {
+            clearInterval(me.queueViewTimer);
+        }
+        me.queueViewTimer = setInterval(function() {
+            me.browseAmqQueue(renderQueueMessages);
+        }, QUEUE_VIEW_REFRESH_MS);
     };
 
     this.onRefresh = function() {};
