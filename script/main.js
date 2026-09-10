@@ -10,23 +10,22 @@ var MAX_LOG_ENTRIES = 100;
 var DEFAULT_PUBLISH_DELAY_MS = 9000;
 var PUBLISH_DELAY_PREF = "publishDelayMs";
 
-// ActiveMQ REST Message API target for the object(s) extracted from a 3DXContent
-// drag-and-drop: POST {amqRestUrl}/{amqDestination}?type={amqDestinationType}.
-// Configured as widget preferences so they can be changed per-dashboard without a code change.
-// NOTE: amqPassword is stored as a plain widget preference (visible to anyone with dashboard
-// edit access / browser devtools) - fine for a low-privilege queue-writer account, but don't
-// put admin credentials here. Also requires CORS enabled on the ActiveMQ REST/Jetty connector,
-// since this is a direct browser-to-ActiveMQ call.
-var AMQ_REST_URL_PREF = "amqRestUrl";
-var AMQ_DESTINATION_PREF = "amqDestination";
-var AMQ_DESTINATION_TYPE_PREF = "amqDestinationType";
+// Topic the extracted drag-and-drop object(s) get published on, via the same PlatformAPI
+// publish/subscribe already used for the Search Bridge feature below - no external broker,
+// no new dependency, just another topic on the platform's own pub/sub bus. Any other
+// widget/app on the same live dashboard session can subscribe to receive them. Not durable:
+// if nothing is subscribed at the moment of the drop, that drop is simply gone.
+var DEFAULT_DND_TOPIC = "onDroppedObjects";
+var DND_TOPIC_PREF = "dndTopic";
+
+// Optional, in addition to the PlatformAPI publish above: if an AMQ URL is configured, each
+// dropped object is also POSTed there directly (e.g. ActiveMQ's REST Message API endpoint,
+// full target including destination + query string, like
+// http://host:8161/api/message/SEARCHBRIDGE.DND?type=queue). Left blank, this is skipped -
+// the PlatformAPI publish above always happens either way.
+var AMQ_URL_PREF = "amqUrl";
 var AMQ_USERNAME_PREF = "amqUsername";
 var AMQ_PASSWORD_PREF = "amqPassword";
-// Broker name from ActiveMQ's own config (<broker brokerName="..."> in activemq.xml,
-// "localhost" unless changed) - needed to address the queue's JMX MBean for browsing.
-var AMQ_BROKER_NAME_PREF = "amqBrokerName";
-
-var QUEUE_VIEW_REFRESH_MS = 5000;
 
 var MyWidget = function() {
     var me = this;
@@ -216,11 +215,11 @@ var MyWidget = function() {
         }
 
         me.debugLog("Search Bridge: extracted dropped items", items);
-        me.pushToAmq(items);
+        me.dispatchDroppedItems(items);
     };
 
     // Reads one or more dropped .json files (each expected to contain a single 3DXContent
-    // payload) and merges the extracted items from all of them into a single AMQ push.
+    // payload) and merges the extracted items from all of them into a single publish.
     this.handleDroppedFiles = function(fileList) {
         var files = Array.prototype.slice.call(fileList);
         var pending = files.length;
@@ -238,7 +237,7 @@ var MyWidget = function() {
                 }
                 pending--;
                 if (pending === 0 && allItems.length) {
-                    me.pushToAmq(allItems);
+                    me.dispatchDroppedItems(allItems);
                 }
             };
             reader.onerror = function() {
@@ -249,35 +248,27 @@ var MyWidget = function() {
         });
     };
 
-    this.getAmqAuthHeader = function() {
-        var username = widget.getValue(AMQ_USERNAME_PREF);
-        if (!username) {
-            return null;
-        }
-        var password = widget.getValue(AMQ_PASSWORD_PREF) || "";
-        return "Basic " + btoa(username + ":" + password);
+    // Publishes the extracted { physicalId, serviceId, ... } objects on the platform's own
+    // pub/sub bus (same PlatformAPI used for Search Bridge below) - any other widget/app on
+    // the same live dashboard session that's subscribed to this topic receives them.
+    this.publishDroppedItems = function(items) {
+        var topic = widget.getValue(DND_TOPIC_PREF) || DEFAULT_DND_TOPIC;
+        me.sendMessage(topic, { data: { items: items } }, null);
     };
 
-    // Pushes each extracted { physicalId, serviceId, ... } object to ActiveMQ via its
-    // REST Message API: POST {amqRestUrl}/{amqDestination}?type={queue|topic}, one POST
-    // per message. Each dropped object becomes its own queue message rather than batching
-    // a multi-item drop into a single message.
+    // Pushes each extracted object straight to AMQ (e.g. ActiveMQ's REST Message API), one
+    // POST per item. Only runs if amqUrl is configured; otherwise a no-op.
     this.pushToAmq = function(items) {
-        var baseUrl = widget.getValue(AMQ_REST_URL_PREF);
-        var destination = widget.getValue(AMQ_DESTINATION_PREF);
-        var destinationType = widget.getValue(AMQ_DESTINATION_TYPE_PREF) || "queue";
-
-        if (!baseUrl || !destination) {
-            me.debugWarn("Search Bridge: AMQ REST URL and/or destination not configured (see widget preferences), skipping push.", items);
+        var url = widget.getValue(AMQ_URL_PREF);
+        if (!url) {
             return;
         }
 
-        var url = baseUrl.replace(/\/+$/, "") + "/" + encodeURIComponent(destination) + "?type=" + encodeURIComponent(destinationType);
-
         var headers = { "Content-Type": "application/json" };
-        var authHeader = me.getAmqAuthHeader();
-        if (authHeader) {
-            headers.Authorization = authHeader;
+        var username = widget.getValue(AMQ_USERNAME_PREF);
+        if (username) {
+            var password = widget.getValue(AMQ_PASSWORD_PREF) || "";
+            headers.Authorization = "Basic " + btoa(username + ":" + password);
         }
 
         items.forEach(function(item) {
@@ -290,74 +281,18 @@ var MyWidget = function() {
                     if (!res.ok) {
                         throw new Error("HTTP " + res.status);
                     }
-                    me.debugLog("Search Bridge: pushed to AMQ", { destination: destination, item: item });
+                    me.debugLog("Search Bridge: pushed to AMQ", item);
                 })
                 .catch(function(err) {
-                    me.debugWarn("Search Bridge: AMQ push failed", { destination: destination, item: item, err: err });
+                    me.debugWarn("Search Bridge: AMQ push failed", item, err);
                 });
         });
     };
 
-    // Jolokia (ActiveMQ's JMX-over-HTTP API) lives alongside the REST Message API on the
-    // same webapp, at .../api/jolokia instead of .../api/message.
-    this.getAmqJolokiaUrl = function() {
-        var restUrl = widget.getValue(AMQ_REST_URL_PREF);
-        if (!restUrl) {
-            return "";
-        }
-        return restUrl.replace(/\/+$/, "").replace(/\/message$/, "") + "/jolokia/";
-    };
-
-    this.getAmqQueueMBean = function() {
-        var destination = widget.getValue(AMQ_DESTINATION_PREF);
-        if (!destination) {
-            return "";
-        }
-        var brokerName = widget.getValue(AMQ_BROKER_NAME_PREF) || "localhost";
-        var destinationType = widget.getValue(AMQ_DESTINATION_TYPE_PREF) === "topic" ? "Topic" : "Queue";
-        return "org.apache.activemq:type=Broker,brokerName=" + brokerName +
-            ",destinationType=" + destinationType + ",destinationName=" + destination;
-    };
-
-    // Non-destructive read of what's currently sitting on the destination, via the queue/topic
-    // MBean's browse() operation - unlike the REST Message API's GET, this does NOT consume
-    // the messages. onDone(messages) on success, onDone(null, err) on failure.
-    this.browseAmqQueue = function(onDone) {
-        var jolokiaUrl = me.getAmqJolokiaUrl();
-        var mbean = me.getAmqQueueMBean();
-        if (!jolokiaUrl || !mbean) {
-            onDone([]);
-            return;
-        }
-
-        var headers = { "Content-Type": "application/json" };
-        var authHeader = me.getAmqAuthHeader();
-        if (authHeader) {
-            headers.Authorization = authHeader;
-        }
-
-        fetch(jolokiaUrl, {
-            method: "POST",
-            headers: headers,
-            body: JSON.stringify({ type: "exec", mbean: mbean, operation: "browse()" })
-        })
-            .then(function(res) {
-                if (!res.ok) {
-                    throw new Error("HTTP " + res.status);
-                }
-                return res.json();
-            })
-            .then(function(json) {
-                if (json.status !== 200) {
-                    throw new Error(json.error || ("Jolokia error status " + json.status));
-                }
-                me.debugLog("Search Bridge: browsed AMQ destination", json.value);
-                onDone(json.value || []);
-            })
-            .catch(function(err) {
-                me.debugWarn("Search Bridge: AMQ browse failed", err);
-                onDone(null, err);
-            });
+    // Always publishes via PlatformAPI; additionally pushes to AMQ if amqUrl is configured.
+    this.dispatchDroppedItems = function(items) {
+        me.publishDroppedItems(items);
+        me.pushToAmq(items);
     };
 
     this.debugLog = function() {
@@ -405,45 +340,31 @@ var MyWidget = function() {
         });
 
         widget.addPreference({
-            name: AMQ_REST_URL_PREF,
+            name: DND_TOPIC_PREF,
             type: "text",
-            label: "ActiveMQ REST API base URL (e.g. http://host:8161/api/message)",
-            defaultValue: ""
+            label: "PlatformAPI topic to publish drag-and-drop objects on",
+            defaultValue: DEFAULT_DND_TOPIC
         });
 
         widget.addPreference({
-            name: AMQ_DESTINATION_PREF,
+            name: AMQ_URL_PREF,
             type: "text",
-            label: "ActiveMQ destination name for drag-and-drop objects",
+            label: "AMQ URL to also push dropped objects to (optional, e.g. ActiveMQ REST Message API endpoint incl. destination + query string)",
             defaultValue: ""
-        });
-
-        widget.addPreference({
-            name: AMQ_DESTINATION_TYPE_PREF,
-            type: "text",
-            label: 'ActiveMQ destination type ("queue" or "topic")',
-            defaultValue: "queue"
         });
 
         widget.addPreference({
             name: AMQ_USERNAME_PREF,
             type: "text",
-            label: "ActiveMQ username (leave blank if not required)",
+            label: "AMQ username (leave blank if not required)",
             defaultValue: ""
         });
 
         widget.addPreference({
             name: AMQ_PASSWORD_PREF,
             type: "text",
-            label: "ActiveMQ password (leave blank if not required)",
+            label: "AMQ password (leave blank if not required)",
             defaultValue: ""
-        });
-
-        widget.addPreference({
-            name: AMQ_BROKER_NAME_PREF,
-            type: "text",
-            label: 'ActiveMQ broker name (from activemq.xml, default "localhost") - needed to browse the queue',
-            defaultValue: "localhost"
         });
 
         var params = me.getParams();
@@ -508,19 +429,10 @@ var MyWidget = function() {
 
             <div class="card">
                 <h2>Live message log (subscribed to "*")</h2>
+                <p class="hint">Drag-and-drop pushes land here too, on the "${DEFAULT_DND_TOPIC}" topic (or your configured dndTopic preference).</p>
                 <button id="clear-log-btn" type="button" class="secondary">Clear log</button>
                 <div class="log" id="log">
                     <div class="log-empty">No messages yet.</div>
-                </div>
-            </div>
-
-            <div class="card">
-                <h2>AMQ queue content</h2>
-                <p class="hint">Non-destructive browse (messages stay on the queue). Auto-refreshes every 5s.</p>
-                <button id="queue-refresh-btn" type="button" class="secondary">Refresh now</button>
-                <div id="queue-status" class="status"></div>
-                <div class="log" id="queue-list">
-                    <div class="log-empty">Not loaded yet.</div>
                 </div>
             </div>`;
 
@@ -534,9 +446,6 @@ var MyWidget = function() {
         var redirectTargetInput = document.getElementById("redirect-target");
         var redirectBtn = document.getElementById("redirect-btn");
         var redirectStatus = document.getElementById("redirect-status");
-        var queueRefreshBtn = document.getElementById("queue-refresh-btn");
-        var queueStatus = document.getElementById("queue-status");
-        var queueList = document.getElementById("queue-list");
 
         var topic = params.topic || DEFAULT_TOPIC;
 
@@ -564,50 +473,6 @@ var MyWidget = function() {
         me.listenMessage("*", function(messageBody, fullMessage) {
             me.appendLog(log, fullMessage.topic, messageBody);
         });
-
-        var renderQueueMessages = function(messages, err) {
-            if (err) {
-                me.setStatus(queueStatus, "failure", "Failed to load queue: " + err.message);
-                return;
-            }
-
-            queueList.innerHTML = "";
-            if (!messages.length) {
-                var emptyEl = document.createElement("div");
-                emptyEl.className = "log-empty";
-                emptyEl.textContent = "Queue is empty.";
-                queueList.appendChild(emptyEl);
-            } else {
-                messages.forEach(function(msg) {
-                    var entry = document.createElement("div");
-                    entry.className = "log-entry";
-                    var bodyText;
-                    try {
-                        bodyText = JSON.stringify(JSON.parse(msg.Text));
-                    } catch (parseErr) {
-                        bodyText = msg.Text;
-                    }
-                    entry.textContent = "[" + msg.JMSTimestamp + "] " + bodyText;
-                    queueList.appendChild(entry);
-                });
-            }
-            me.setStatus(queueStatus, "success", messages.length + " message(s) on queue.");
-        };
-
-        queueRefreshBtn.addEventListener("click", function() {
-            me.browseAmqQueue(renderQueueMessages);
-        });
-
-        me.browseAmqQueue(renderQueueMessages);
-
-        // Debug UI gets rebuilt (fresh interval + stale closures) each time renderDebugUI runs,
-        // so clear any previous timer first to avoid stacking multiple auto-refreshes.
-        if (me.queueViewTimer) {
-            clearInterval(me.queueViewTimer);
-        }
-        me.queueViewTimer = setInterval(function() {
-            me.browseAmqQueue(renderQueueMessages);
-        }, QUEUE_VIEW_REFRESH_MS);
     };
 
     this.onRefresh = function() {};

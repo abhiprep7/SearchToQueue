@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8" />
-<title>SearchBridge DnD/AMQ test harness</title>
+<title>SearchBridge DnD test harness</title>
 <style>
   body { font-family: -apple-system, "Segoe UI", sans-serif; padding: 20px; max-width: 720px; }
   h1 { font-size: 18px; }
@@ -26,14 +26,15 @@
 </style>
 </head>
 <body>
-  <h1>SearchBridge drag-and-drop &rarr; AMQ test harness</h1>
+  <h1>SearchBridge drag-and-drop test harness</h1>
   <p class="hint">
     This is a local-only dev page. It stubs the 3DX <code>widget</code> platform global
-    (getUrl/addEvent/addPreference/getValue/setIcon/setTitle) so the real
-    <code>script/main.js</code> can run and be dropped on outside of an actual 3DX dashboard.
-    The AMQ preferences below are pre-filled to point at the local broker started via
-    <code>start-amq.bat</code>. Open this page with <code>?debug=1</code> so drop/push
-    results are logged (both to devtools console and the on-page log below).
+    (getUrl/addEvent/addPreference/getValue/setIcon/setTitle) and a minimal in-page
+    <code>PlatformAPI</code> (publish/subscribe loop back to each other right here) so the
+    real <code>script/main.js</code> can run and be dropped on outside of an actual 3DX
+    dashboard. Open this page with <code>?debug=1</code> so the dropped items and the
+    resulting publish show up in both devtools console and the "Live message log" panel
+    the widget itself renders below.
   </p>
 
   <div id="drag-source" draggable="true">&#128230; Drag me onto the page (2 VPMReference objects)</div>
@@ -67,13 +68,7 @@
 
   // --- minimal 3DX platform stub: just enough surface area for main.js to run standalone ---
   window.widget = {
-    _prefs: {
-      amqRestUrl: "http://localhost:8161/api/message",
-      amqDestination: "SEARCHBRIDGE.DND",
-      amqDestinationType: "queue",
-      amqUsername: "admin",
-      amqPassword: "admin"
-    },
+    _prefs: {},
     getUrl: function() { return window.location.href; },
     addEvent: function(name, fn) {
       // Real platform calls onLoad once the widget iframe is ready; simulate that here.
@@ -87,14 +82,29 @@
     setTitle: function(t) { document.title = t; }
   };
 
-  // main.js's publish path uses require(["DS/PlatformAPI/PlatformAPI"]) which only exists on
-  // the real 3DX platform. Not under test here (we're testing the AMQ push path) - stub it so
-  // it doesn't throw when the debug UI tries to subscribe to messages.
-  window.require = function(deps) {
-    console.warn("harness: require() stub - PlatformAPI not available here, ignoring", deps);
+  // Minimal in-page PlatformAPI stand-in: publish() logs + loops back to anything that
+  // called subscribe(), so dropping an object here actually shows up in the widget's own
+  // "Live message log" panel (which subscribes to "*"), same as it would flow through the
+  // real platform - just without leaving this page.
+  var platformAPISubscribers = [];
+  var platformAPIStub = {
+    publish: function(topic, data) {
+      console.log("PlatformAPI.publish", topic, data);
+      platformAPISubscribers.forEach(function(sub) {
+        if (sub.topic === "*" || sub.topic === topic) {
+          sub.callback(data, { topic: topic });
+        }
+      });
+    },
+    subscribe: function(topic, callback) {
+      platformAPISubscribers.push({ topic: topic, callback: callback });
+    }
+  };
+  window.require = function(deps, callback) {
+    if (callback) { callback(platformAPIStub); }
   };
 </script>
-<script src="script/main.js?v=12"></script>
+<script src="script/main.js?v=14"></script>
 <script>
   var samplePayload = {
     protocol: "3DXContent",
