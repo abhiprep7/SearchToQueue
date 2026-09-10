@@ -27,6 +27,11 @@ var AMQ_URL_PREF = "amqUrl";
 var AMQ_USERNAME_PREF = "amqUsername";
 var AMQ_PASSWORD_PREF = "amqPassword";
 
+// Debug mode also toggleable from the preferences tab, not just "?debug=1" in the launch URL -
+// on the real platform the widget is opened by the dashboard itself, so the URL isn't always
+// something you control. Either one turns debug on.
+var DEBUG_PREF = "debug";
+
 var MyWidget = function() {
     var me = this;
 
@@ -340,6 +345,13 @@ var MyWidget = function() {
         });
 
         widget.addPreference({
+            name: DEBUG_PREF,
+            type: "text",
+            label: 'Debug mode ("1" to enable - shows the manual publish/redirect/message-log panel)',
+            defaultValue: "0"
+        });
+
+        widget.addPreference({
             name: DND_TOPIC_PREF,
             type: "text",
             label: "PlatformAPI topic to publish drag-and-drop objects on",
@@ -368,7 +380,7 @@ var MyWidget = function() {
         });
 
         var params = me.getParams();
-        me.debug = params.debug === "1";
+        me.debug = params.debug === "1" || widget.getValue(DEBUG_PREF) === "1";
 
         me.debugLog("Search Bridge iframe location:", {
             href: window.location.href,

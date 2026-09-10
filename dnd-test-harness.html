@@ -32,9 +32,10 @@
     (getUrl/addEvent/addPreference/getValue/setIcon/setTitle) and a minimal in-page
     <code>PlatformAPI</code> (publish/subscribe loop back to each other right here) so the
     real <code>script/main.js</code> can run and be dropped on outside of an actual 3DX
-    dashboard. Open this page with <code>?debug=1</code> so the dropped items and the
-    resulting publish show up in both devtools console and the "Live message log" panel
-    the widget itself renders below.
+    dashboard. Debug mode is pre-enabled via the stub's <code>debug</code> preference (no
+    <code>?debug=1</code> URL flag needed here), so dropped items and the resulting publish
+    show up in both devtools console and the "Live message log" panel the widget itself
+    renders below.
   </p>
 
   <div id="drag-source" draggable="true">&#128230; Drag me onto the page (2 VPMReference objects)</div>
@@ -68,7 +69,9 @@
 
   // --- minimal 3DX platform stub: just enough surface area for main.js to run standalone ---
   window.widget = {
-    _prefs: {},
+    // Debug mode is a real widget preference now, not just "?debug=1" in the URL - default it
+    // on here so this harness doesn't need the URL flag either.
+    _prefs: { debug: "1" },
     getUrl: function() { return window.location.href; },
     addEvent: function(name, fn) {
       // Real platform calls onLoad once the widget iframe is ready; simulate that here.
@@ -104,7 +107,7 @@
     if (callback) { callback(platformAPIStub); }
   };
 </script>
-<script src="script/main.js?v=14"></script>
+<script src="script/main.js?v=15"></script>
 <script>
   var samplePayload = {
     protocol: "3DXContent",
